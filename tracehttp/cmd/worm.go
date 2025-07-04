@@ -1,10 +1,15 @@
 package cmd
 
 import (
+	"bytes"
 	"log"
+	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"unsafe"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 )
@@ -16,12 +21,28 @@ type buf struct {
 }
 
 func Execute() {
+	args := os.Args[1:]
 	log.Printf("Starting worm \n")
+	pid, err := extractPid(args[0])
+	if err != nil {
+		log.Fatalf("failed to extract pid: %v", err)
+	}
+	log.Printf("pid: %d\n", pid)
+
 	objs := TracerObjects{}
 	if err := LoadTracerObjects(&objs, nil); err != nil {
 		log.Fatalf("loading objects: %v", err)
 	}
 	defer objs.Close()
+	err = objs.PidMap.Pin("/sys/fs/bpf/pid_map")
+	if err != nil {
+		log.Fatalf("failed to pin map: %v", err)
+	}
+	bufMap, err := ebpf.LoadPinnedMap("/sys/fs/bpf/pid_map", nil)
+	if err != nil {
+		log.Fatalf("failed to open pinned map: %v", err)
+	}
+	PutPidInBufMap(bufMap, uint32(pid))
 
 	trace, err := link.Tracepoint("syscalls", "sys_enter_read", objs.HandleRead, &link.TracepointOptions{})
 	if err != nil {
@@ -66,5 +87,29 @@ func Execute() {
 
 		log.Printf("pid: %d, len: %d, output: \n%s\n", userEvent.pid, userEvent.len, returnStr)
 		// log.Printf("output: %v\n", output)
+	}
+}
+
+func extractPid(path string) (int, error) {
+	cmd := exec.Command("pgrep", "-x", path)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err := cmd.Run()
+	if err != nil {
+		return 0, err
+	}
+	pidStr := strings.TrimSpace(out.String())
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil {
+		return 0, err
+	}
+	return pid, nil
+}
+
+func PutPidInBufMap(bufMap *ebpf.Map, pid uint32) {
+	key := uint32(0)
+	err := bufMap.Put(key, pid)
+	if err != nil {
+		log.Fatalf("failed to update BufMap: %v", err)
 	}
 }

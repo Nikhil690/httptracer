@@ -23,19 +23,30 @@ struct {
     __type(key, __u32);         // PID
     __type(value, void *);    // buf pointer
     __uint(max_entries, 1024);
-} buf_map SEC(".maps");
+} buf_ptr_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, __u32);        
+    __type(value, __u32);    // PID
+    __uint(max_entries, 1024);
+} pid_map SEC(".maps");
 
 SEC("tracepoint/syscalls/sys_enter_read")
 int handle_read(struct trace_event_raw_sys_enter *ctx) {
-    long int target_pid = 391169;
+    __u32 key = 0;
+    __u32 *target_pid = bpf_map_lookup_elem(&pid_map, &key);
+    if (!target_pid) {
+        return 0;
+    }
     int pid = bpf_get_current_pid_tgid() >> 32;
-    if (pid != target_pid) {
+    if (pid != *target_pid) {
         return 0;
     }
 
     int fd = ctx->args[0];
     void *buf = (void *)ctx->args[1];
-    bpf_map_update_elem(&buf_map, &pid, &buf, BPF_ANY);
+    bpf_map_update_elem(&buf_ptr_map, &pid, &buf, BPF_ANY);
     // __u64 raw_count = ctx->args[2];
 
     // // Explicitly bound the count
@@ -57,14 +68,14 @@ int handle_read(struct trace_event_raw_sys_enter *ctx) {
 SEC("tracepoint/syscalls/sys_exit_read")
 int trace_exit_read(struct trace_event_raw_sys_exit *ctx) {
     int pid = bpf_get_current_pid_tgid() >> 32;
-    void **buf_ptr = bpf_map_lookup_elem(&buf_map, &pid);
+    void **buf_ptr = bpf_map_lookup_elem(&buf_ptr_map, &pid);
     if (!buf_ptr) return 0;
 
     void *buf = *buf_ptr;
     int bytes = ctx->ret;
 
     if (bytes <= 0) {
-        bpf_map_delete_elem(&buf_map, &pid);
+        bpf_map_delete_elem(&buf_ptr_map, &pid);
         return 0;
     }
 
@@ -87,21 +98,25 @@ int trace_exit_read(struct trace_event_raw_sys_exit *ctx) {
         bpf_printk("read(%d): read_user failed\n", bytes);
     }
 
-    bpf_map_delete_elem(&buf_map, &pid);
+    bpf_map_delete_elem(&buf_ptr_map, &pid);
     return 0;
 }
 
 SEC("tracepoint/syscalls/sys_enter_write")
 int handle_write(struct trace_event_raw_sys_enter *ctx) {
-    long int target_pid = 391169;
+    __u32 key = 0;
+    __u32 *target_pid = bpf_map_lookup_elem(&pid_map, &key);
+    if (!target_pid) {
+        return 0;
+    }
     int pid = bpf_get_current_pid_tgid() >> 32;
-    if (pid != target_pid) {
+    if (pid != *target_pid) {
         return 0;
     }
 
     int fd = ctx->args[0];
     void *buf = (void *)ctx->args[1];
-    bpf_map_update_elem(&buf_map, &pid, &buf, BPF_ANY);
+    bpf_map_update_elem(&buf_ptr_map, &pid, &buf, BPF_ANY);
     // __u64 raw_count = ctx->args[2];
 
     // // Explicitly bound the count
@@ -123,14 +138,14 @@ int handle_write(struct trace_event_raw_sys_enter *ctx) {
 SEC("tracepoint/syscalls/sys_exit_write")
 int trace_exit_write(struct trace_event_raw_sys_exit *ctx) {
     int pid = bpf_get_current_pid_tgid() >> 32;
-    void **buf_ptr = bpf_map_lookup_elem(&buf_map, &pid);
+    void **buf_ptr = bpf_map_lookup_elem(&buf_ptr_map, &pid);
     if (!buf_ptr) return 0;
 
     void *buf = *buf_ptr;
     int bytes = ctx->ret;
 
     if (bytes <= 0) {
-        bpf_map_delete_elem(&buf_map, &pid);
+        bpf_map_delete_elem(&buf_ptr_map, &pid);
         return 0;
     }
 
@@ -153,7 +168,7 @@ int trace_exit_write(struct trace_event_raw_sys_exit *ctx) {
         bpf_printk("read(%d): write_user failed\n", bytes);
     }
 
-    bpf_map_delete_elem(&buf_map, &pid);
+    bpf_map_delete_elem(&buf_ptr_map, &pid);
     return 0;
 }
 
